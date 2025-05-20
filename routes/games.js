@@ -1,165 +1,282 @@
 const express = require('express');
 const router = express.Router();
 
-// In-memory data store
-let games = [
-  {
-    id: 1,
-    title: "Counter Strike 2",
-    bannerImage: "/images/Cs2-banner.png",
-    image: "/images/Cs2.jpg",
-    description: "For over two decades, Counter-Strike has offered an elite competitive experience...",
-    developer: "Valve",
-    releaseDate: "1 July 2023",
-    averageReviews: "3/5",
-    tags: ["FPS", "Multiplayer", "Shooter"],
-    price: "Free",
-  },
-  {
-    id: 2,
-    title: "Dark Souls III",
-    bannerImage: "/images/header.jpg",
-    image: "/images/ds3cover.jpg",
-    description: "As fires fade and the world falls into ruin...",
-    developer: "FromSoftware",
-    releaseDate: "11 Apr 2016",
-    averageReviews: "5/5",
-    tags: ["Souls-like", "Rpg", "Dark Fantasy"],
-    price: "40$",
-  },
-  ...Array(200)
-    .fill()
-    .map((_, index) => ({
-      id: index + 3,
-      title: `Game ${index + 3}`,
-      bannerImage: "/images/placeholder.jpg", 
-      image: "/images/placeholder.jpg", 
-      description: "No description available.",
-      developer: "Unknown",
-      releaseDate: "N/A",
-      averageReviews: "0",
-      tags: ["Unknown"],
-      price: "N/A",
-    })),
-];
-let userStats = [
-  {
-    userId: 1,
-    achievements: 15,
-    hoursPlayed: 50,
-    finished: true,
-    score: 8.5,
-    review: "Amazing game, lots of fun!",
-  },
-  {
-    userId: 2,
-    achievements: 25,
-    hoursPlayed: 130,
-    finished: true,
-    score: 10,
-    review: "Praise the sun!",
-  },
-  ...Array(200)
-    .fill()
-    .map((_, index) => ({
-      userId: index + 3,
-      achievements: Math.floor(Math.random() * 50), // Random achievements count
-      hoursPlayed: Math.floor(Math.random() * 200), // Random hours played
-      finished: Math.random() > 0.5, // Random finished state
-      score: (Math.random() * 10).toFixed(1), // Random score between 0 and 10
-      review: "No review yet.",
-    })),
-];
-
 // GET all games
-router.get('/games', (req, res) => {
-  res.json(games);
+// GET all games with search and pagination
+router.get('/games', async (req, res) => {
+  try {
+    const { search, page = 1, limit = 101 } = req.query;
+    const offset = (page - 1) * limit;
+    const user_id = 1; // hardcoded user
+
+    let query = `
+      SELECT g.* 
+      FROM games g
+      JOIN user_game_stats ugs ON g.id = ugs.game_id
+      WHERE ugs.user_id = $1
+    `;
+    const params = [user_id];
+
+    if (search) {
+      query += ` AND g.title ILIKE $2`;
+      params.push(`%${search}%`);
+    }
+
+    const limitOffsetIndex = params.length + 1;
+    query += ` ORDER BY g.title LIMIT $${limitOffsetIndex} OFFSET $${limitOffsetIndex + 1}`;
+    params.push(limit, offset);
+
+    const { rows } = await req.pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
+
 // GET game by ID
-router.get('/games/:id', (req, res) => {
-  const game = games.find(g => g.id === parseInt(req.params.id));
-  if (!game) return res.status(404).json({ error: 'Game not found' });
-  res.json(game);
+router.get('/games/:id', async (req, res) => {
+  try {
+    const { rows } = await req.pool.query('SELECT * FROM games WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Game not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+// GET user stats with optional filters and pagination
+router.get('/user-stats', async (req, res) => {
+  try {
+    const { userId = 1, page = 1, limit = 20 } = req.query;
+    const offset = (page - 1) * limit;
+
+    const { rows } = await req.pool.query(
+      `SELECT * FROM user_game_stats
+       WHERE user_id = $1
+       ORDER BY game_id
+       LIMIT $2 OFFSET $3`,
+      [userId, limit, offset]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // GET user stats for a game
-router.get('/user-stats/:gameId', (req, res) => {
-  const stats = userStats[req.params.gameId];
-  if (!stats) return res.status(404).json({ error: 'Stats not found' });
-  res.json(stats);
+// GET user stats for a game - hardcoded to return stats for user ID 0
+router.get('/user-stats/:gameId', async (req, res) => {
+  try {
+    const { rows } = await req.pool.query(
+      `SELECT * 
+       FROM user_game_stats 
+       WHERE game_id = $1 AND user_id = 1`, // Hardcoded user_id = 0
+      [req.params.gameId]
+    );
+    
+    if (rows.length === 0) {
+      // Return default empty stats for user 0 if none exist
+      return res.json({
+        user_id: 1,
+        game_id: parseInt(req.params.gameId),
+        achievements: 0,
+        hours_played: 0,
+        finished: false,
+        score: 0,
+        review: "No stats yet"
+      });
+    }
+    
+    res.json(rows[0]); // Return the first (and should be only) matching stat
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // POST new game
-router.post('/games', (req, res) => {
+router.post('/games', async (req, res) => {
   const newGame = req.body;
   
   // Validate required fields
-  if (!newGame.id || !newGame.title) {
-    return res.status(400).json({ error: 'ID and title are required' });
+  if (!newGame.title) {
+    return res.status(400).json({ error: 'Title is required' });
   }
   
-  // Check for duplicate ID
-  if (games.some(game => game.id === newGame.id)) {
-    return res.status(400).json({ error: 'Game ID already exists' });
+  try {
+    const { rows } = await req.pool.query(
+      `INSERT INTO games 
+       (title, banner_image, image, description, developer, release_date, average_reviews, price) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+       RETURNING *`,
+      [
+        newGame.title,
+        newGame.bannerImage || '/images/placeholder.jpg',
+        newGame.image || '/images/placeholder.jpg',
+        newGame.description || 'No description available.',
+        newGame.developer || 'Unknown',
+        newGame.releaseDate || 'N/A',
+        newGame.averageReviews || '0',
+        newGame.price || '10$'
+      ]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
   }
-  
-  // Set defaults for optional fields
-  const gameWithDefaults = {
-    bannerImage: "/images/placeholder.jpg",
-    image: "/images/placeholder.jpg",
-    description: "No description available.",
-    developer: "Unknown",
-    releaseDate: "N/A",
-    averageReviews: "0",
-    tags: ["Unknown"],
-    price: "10$",
-    ...newGame
-  };
-  
-  games.push(gameWithDefaults);
-  res.status(201).json(gameWithDefaults);
 });
 
 // POST user stats for a game
-router.post('/games/:id/stats', (req, res) => {
+router.post('/games/:id/stats', async (req, res) => {
   const gameId = req.params.id;
   const stats = req.body;
   
   // Validate required stats
-  if (typeof stats.achievements !== 'number' || 
+  if (typeof stats.userId !== 'number' || 
+      typeof stats.achievements !== 'number' || 
       typeof stats.hoursPlayed !== 'number' ||
       typeof stats.score !== 'number') {
     return res.status(400).json({ error: 'Invalid stats format' });
   }
   
-  userStats[gameId] = stats;
-  res.status(201).json(stats);
+  try {
+    const { rows } = await req.pool.query(
+      `INSERT INTO user_game_stats 
+       (user_id, game_id, achievements, hours_played, finished, score, review) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7) 
+       RETURNING *`,
+      [
+        stats.userId,
+        gameId,
+        stats.achievements,
+        stats.hoursPlayed,
+        stats.finished || false,
+        stats.score,
+        stats.review || 'No review yet.'
+      ]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // PUT update game
-router.put('/games/:id', (req, res) => {
-  const index = games.findIndex(g => g.id === parseInt(req.params.id));
-  if (index === -1) return res.status(404).json({ error: 'Game not found' });
+// In your backend route file
+router.put('/games/:id/stats', async (req, res) => {
+  const gameId = req.params.id;
+  const stats = req.body;
   
-  games[index] = { ...games[index], ...req.body };
-  res.json(games[index]);
+  try {
+    // First try to update existing stats for user 1
+    const updateResult = await req.pool.query(
+      `UPDATE user_game_stats SET
+       achievements = $1,
+       hours_played = $2,
+       finished = $3,
+       score = $4,
+       review = $5
+       WHERE game_id = $6 AND user_id = 500
+       RETURNING *`,
+      [
+        stats.achievements,
+        stats.hours_played,
+        stats.finished,
+        stats.score,
+        stats.review,
+        gameId
+      ]
+    );
+    
+    if (updateResult.rows.length > 0) {
+      return res.json(updateResult.rows[0]);
+    }
+    
+    // If no existing stats, create new ones for user 1
+    const insertResult = await req.pool.query(
+      `INSERT INTO user_game_stats 
+       (user_id, game_id, achievements, hours_played, finished, score, review) 
+       VALUES (1, $1, $2, $3, $4, $5, $6) 
+       RETURNING *`,
+      [
+        gameId,
+        stats.achievements,
+        stats.hours_played,
+        stats.finished,
+        stats.score,
+        stats.review
+      ]
+    );
+    
+    res.json(insertResult.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // DELETE game
-router.delete('/games/:id', (req, res) => {
-  const index = games.findIndex(g => g.id === parseInt(req.params.id));
-  if (index === -1) return res.status(404).json({ error: 'Game not found' });
-  
-  const deletedGame = games.splice(index, 1)[0];
-  delete userStats[req.params.id];
-  res.json(deletedGame);
+router.delete('/games/:id', async (req, res) => {
+  try {
+    await req.pool.query('BEGIN');
+    
+    // First delete related stats
+    await req.pool.query('DELETE FROM user_game_stats WHERE game_id = $1', [req.params.id]);
+    
+    // Then delete the game
+    const { rows } = await req.pool.query(
+      'DELETE FROM games WHERE id = $1 RETURNING *',
+      [req.params.id]
+    );
+    
+    await req.pool.query('COMMIT');
+    
+    if (rows.length === 0) return res.status(404).json({ error: 'Game not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    await req.pool.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
-// module.exports = {
-//   router,
-//   games,
-//   userStats
-// };
+router.get('/user-statistics', async (req, res) => {
+  try {
+    const { search, page = 1, limit = 101 } = req.query;
+    const offset = (page - 1) * limit;
+    const user_id = 1; // hardcoded user
+
+    let query = `
+    SELECT
+      g.id AS game_id,
+      g.title AS game_title,
+      ugs.hours_played,
+      ugs.score,
+      ugs.finished,
+      ugs.achievements,
+      ugs.review
+    FROM user_game_stats ugs
+    JOIN games g ON ugs.game_id = g.id
+    WHERE ugs.user_id = $1
+    ORDER BY ugs.score DESC
+    LIMIT 50
+  `;
+  const params = [user_id];
+  
+
+    const { rows } = await req.pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 
 module.exports = router;
