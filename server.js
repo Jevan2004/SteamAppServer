@@ -7,6 +7,7 @@ require('dotenv').config();
 const app = express();
 const connectionString = process.env.DATABASE_URL || process.env.DATABASE_PUBLIC_URL;
 
+
 const pool = new Pool({
   connectionString,
   ssl: {
