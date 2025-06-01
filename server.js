@@ -7,17 +7,15 @@ require('dotenv').config();
 const app = express();
 
 const pool = new Pool({
-  user: process.env.DB_USER || 'postgres',
-  host: process.env.DB_HOST || 'localhost',
-  database: process.env.DB_NAME || 'SteamDb',
-  password: process.env.DB_PASSWORD || '2004',
-  port: process.env.DB_PORT || 5432,});
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 
   pool.connect()
   .then(() => console.log('Connected to PostgreSQL'))
   .catch(err => {
     console.error('PostgreSQL connection error:', err);
-    process.exit(1); // Stop the app if DB isn't available
+    process.exit(1); 
   });
 
 app.use((req, res, next) => {
