@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const gamesRouter = require('./routes/games');
 const { Pool } = require('pg');
+
 require('dotenv').config();
 
 const app = express();

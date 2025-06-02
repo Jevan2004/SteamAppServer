@@ -2,13 +2,14 @@ require('dotenv').config();
 const { faker } = require('@faker-js/faker');
 const { Pool } = require('pg');
 
-// Initialize connection pool
+const connectionString = process.env.DATABASE_URL || process.env.DATABASE_PUBLIC_URL;
+
+
 const pool = new Pool({
-  user: process.env.DB_USER || 'postgres',
-  host: process.env.DB_HOST || 'localhost',
-  database: process.env.DB_NAME || 'yourdbname',
-  password: process.env.DB_PASSWORD || 'yourpassword',
-  port: process.env.DB_PORT || 5432,
+  connectionString,
+  ssl: {
+    rejectUnauthorized: false,
+  }
 });
 
 // Image options
@@ -39,43 +40,13 @@ async function generateGames(count) {
 
 async function generateUsers(count) {
   console.log(`\nGenerating ${count} unique users...`);
-  const existingUsernames = new Set();
-  const existingEmails = new Set();
-  
-  for (let i = 0; i < count; i++) {
-    let username, email;
-    let attempts = 0;
-    const maxAttempts = 100;
-
-    // Generate unique username and email
-    do {
-      username = faker.internet.username();
-      attempts++;
-      if (attempts >= maxAttempts) {
-        throw new Error('Failed to generate unique username after maximum attempts');
-      }
-    } while (existingUsernames.has(username));
-    
-    attempts = 0;
-    do {
-      email = faker.internet.email();
-      attempts++;
-      if (attempts >= maxAttempts) {
-        throw new Error('Failed to generate unique email after maximum attempts');
-      }
-    } while (existingEmails.has(email));
-    
-    existingUsernames.add(username);
-    existingEmails.add(email);
 
     await pool.query(
-      `INSERT INTO users (username, email, created_at) 
+      `INSERT INTO users (id,username, email) 
        VALUES ($1, $2, $3)`,
-      [username, email, faker.date.past({ years: 5 })]
+      [1,'jevan', 'ceva@gmail.com']
     );
-    
-    if (i % 1000 === 0) console.log(`Generated ${i} users`);
-  }
+      
 }
 
 async function generateUserStats(count) {
@@ -125,7 +96,7 @@ async function generateUserStats(count) {
       inserted++;
       if (inserted % 1000 === 0) console.log(`Generated ${inserted} stats`);
     } catch (err) {
-      console.warn(`Skipped duplicate or error: ${err.code}`);
+      console.warn(`Skipped duplicate or error: ${err.message}`);
     }
     attempts++;
   }
@@ -139,9 +110,9 @@ async function main() {
     console.time('Data generation completed in');
     
     // Start with smaller numbers for testing
-    await generateGames(10);
-    await generateUsers(1);
-    await generateUserStats(90000);
+    //await generateGames(10);
+    //await generateUsers(1);
+    await generateUserStats(10);
     
     console.timeEnd('Data generation completed in');
   } catch (error) {
