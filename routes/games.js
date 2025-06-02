@@ -4,24 +4,41 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const JWT_KEY = 'Cristina';
 
+// Middleware to verify JWT token
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ message: 'Authentication required' });
+  }
+
+  jwt.verify(token, JWT_KEY, (err, user) => {
+    if (err) {
+      return res.status(403).json({ message: 'Invalid or expired token' });
+    }
+    req.user = user;
+    next();
+  });
+};
+
 // GET all games
 // GET all games with search and pagination
-router.get('/games', async (req, res) => {
+router.get('/games', authenticateToken, async (req, res) => {
   try {
     const { search, page = 1, limit = 101 } = req.query;
     const offset = (page - 1) * limit;
-    const user_id = 1; // hardcoded user
+    const userId = req.user.userId;
 
     let query = `
       SELECT g.* 
       FROM games g
-      JOIN user_game_stats ugs ON g.id = ugs.game_id
-      WHERE ugs.user_id = $1
+      LEFT JOIN user_game_stats ugs ON g.id = ugs.game_id AND ugs.user_id = $1
     `;
-    const params = [user_id];
+    const params = [userId];
 
     if (search) {
-      query += ` AND g.title ILIKE $2`;
+      query += ` WHERE g.title ILIKE $2`;
       params.push(`%${search}%`);
     }
 
@@ -71,20 +88,19 @@ router.get('/user-stats', async (req, res) => {
 });
 
 // GET user stats for a game
-// GET user stats for a game - hardcoded to return stats for user ID 0
-router.get('/user-stats/:gameId', async (req, res) => {
+router.get('/user-stats/:gameId', authenticateToken, async (req, res) => {
   try {
+    const userId = req.user.userId;
     const { rows } = await req.pool.query(
       `SELECT * 
        FROM user_game_stats 
-       WHERE game_id = $1 AND user_id = 1`, // Hardcoded user_id = 0
-      [req.params.gameId]
+       WHERE game_id = $1 AND user_id = $2`,
+      [req.params.gameId, userId]
     );
     
     if (rows.length === 0) {
-      // Return default empty stats for user 0 if none exist
       return res.json({
-        user_id: 1,
+        user_id: userId,
         game_id: parseInt(req.params.gameId),
         achievements: 0,
         hours_played: 0,
@@ -94,7 +110,7 @@ router.get('/user-stats/:gameId', async (req, res) => {
       });
     }
     
-    res.json(rows[0]); // Return the first (and should be only) matching stat
+    res.json(rows[0]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
@@ -172,12 +188,13 @@ router.post('/games/:id/stats', async (req, res) => {
 
 // PUT update game
 // In your backend route file
-router.put('/games/:id/stats', async (req, res) => {
+router.put('/games/:id/stats', authenticateToken, async (req, res) => {
   const gameId = req.params.id;
+  const userId = req.user.userId;
   const stats = req.body;
   
   try {
-    // First try to update existing stats for user 1
+    // First try to update existing stats
     const updateResult = await req.pool.query(
       `UPDATE user_game_stats SET
        achievements = $1,
@@ -185,7 +202,7 @@ router.put('/games/:id/stats', async (req, res) => {
        finished = $3,
        score = $4,
        review = $5
-       WHERE game_id = $6 AND user_id = 500
+       WHERE game_id = $6 AND user_id = $7
        RETURNING *`,
       [
         stats.achievements,
@@ -193,7 +210,8 @@ router.put('/games/:id/stats', async (req, res) => {
         stats.finished,
         stats.score,
         stats.review,
-        gameId
+        gameId,
+        userId
       ]
     );
     
@@ -201,13 +219,14 @@ router.put('/games/:id/stats', async (req, res) => {
       return res.json(updateResult.rows[0]);
     }
     
-    // If no existing stats, create new ones for user 1
+    // If no existing stats, create new ones
     const insertResult = await req.pool.query(
       `INSERT INTO user_game_stats 
        (user_id, game_id, achievements, hours_played, finished, score, review) 
-       VALUES (1, $1, $2, $3, $4, $5, $6) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7) 
        RETURNING *`,
       [
+        userId,
         gameId,
         stats.achievements,
         stats.hours_played,
@@ -249,11 +268,11 @@ router.delete('/games/:id', async (req, res) => {
   }
 });
 
-router.get('/user-statistics', async (req, res) => {
+router.get('/user-statistics', authenticateToken, async (req, res) => {
   try {
     const { search, page = 1, limit = 101 } = req.query;
     const offset = (page - 1) * limit;
-    const user_id = 1; // hardcoded user
+    const userId = req.user.userId;
 
     let query = `
     SELECT
@@ -270,8 +289,7 @@ router.get('/user-statistics', async (req, res) => {
     ORDER BY ugs.score DESC
     LIMIT 50
   `;
-  const params = [user_id];
-  
+  const params = [userId];
 
     const { rows } = await req.pool.query(query, params);
     res.json(rows);
@@ -289,20 +307,19 @@ router.post('/login', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
     const user = result.rows[0];
-    console.log('Login attempt:', username, password);
+    
     if (!user) return res.status(401).json({ message: 'Invalid username or password' });
 
-    const passwordMatch = (password === user.password)
-    console.log(password, user.password)
+    const passwordMatch = (password === user.password);
     if (!passwordMatch) return res.status(401).json({ message: 'Invalid username or password' });
 
     const token = jwt.sign(
       { userId: user.id, username: user.username },
-     JWT_KEY,
+      JWT_KEY,
       { expiresIn: '2h' }
     );
 
-    res.json({ token });
+    res.json({ token, userId: user.id });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ message: 'Server error during login' });
